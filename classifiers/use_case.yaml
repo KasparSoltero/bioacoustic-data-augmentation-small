@@ -1,0 +1,5 @@
+experiment: 100
+project_root: "full/path/to/classifiers/folder"
+num_cores: 8
+run_training: true
+epochs: 20

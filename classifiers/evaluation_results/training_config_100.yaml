@@ -1,0 +1,6 @@
+epochs: 20
+experiment: 100
+experiment_dir: evaluation_results
+num_cores: 8
+project_root: classifiers
+run_training: true

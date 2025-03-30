@@ -1,0 +1,14 @@
+matplotlib
+pandas
+numpy
+requests        
+pyyaml
+networkx        
+sympy           
+tqdm
+torch
+torchaudio
+Pillow
+soundfile
+pydub
+chardet
