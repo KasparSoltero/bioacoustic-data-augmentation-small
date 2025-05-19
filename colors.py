@@ -281,3 +281,76 @@ def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     # Convert to RGB
     return [int(hex_color[i:i+2], 16) for i in (0, 2, 4)]
+
+import colorsys
+import math
+
+def generate_rainbow_colors(num_colors: int) -> list[str]:
+    """
+    Generates a list of hex color codes interpolating a smooth rainbow.
+
+    The rainbow starts at Red (hue=0.0) and ends near Violet (hue=0.75),
+    maintaining full saturation and standard lightness.
+
+    Args:
+        num_colors: The number of distinct colors to generate (integer).
+                    Must be non-negative.
+
+    Returns:
+        A list of hex color strings (e.g., '#FF0000').
+        Returns an empty list if num_colors is 0 or negative.
+        Returns ['#FF0000'] if num_colors is 1.
+
+    Raises:
+        TypeError: If num_colors is not an integer.
+        ValueError: If num_colors is negative (handled by returning []).
+    """
+    if not isinstance(num_colors, int):
+        raise TypeError("Input must be an integer.")
+    if num_colors <= 0:
+        return []
+
+    hex_colors = []
+
+    # Define HSL parameters for the rainbow
+    saturation = 1.0  # Full saturation for vibrant colors
+    lightness = 0.5   # Standard lightness (0.0=black, 1.0=white)
+    start_hue = 0.0   # Red
+    # End hue slightly before red again (e.g., 270 degrees / 360 = 0.75 for Violet)
+    # Adjust this value (0.0 to 1.0) to change the end color of the rainbow
+    end_hue = 0.75    # Violet
+
+    if num_colors == 1:
+        # Special case for a single color: return Red
+        rgb_float = colorsys.hls_to_rgb(start_hue, lightness, saturation)
+        # Convert float (0-1) to int (0-255)
+        rgb_int = tuple(max(0, min(255, int(round(c * 255)))) for c in rgb_float)
+        # Format as hex string and return
+        return [f"#{rgb_int[0]:02x}{rgb_int[1]:02x}{rgb_int[2]:02x}".upper()]
+
+    # Generate colors for num_colors > 1
+    for i in range(num_colors):
+        # Calculate the current hue, interpolating linearly between start and end hue
+        # We divide by (num_colors - 1) to ensure the last color hits end_hue exactly
+        hue = start_hue + (end_hue - start_hue) * i / (num_colors - 1)
+
+        # Convert HSL to RGB (results are floats between 0.0 and 1.0)
+        rgb_float = colorsys.hls_to_rgb(hue, lightness, saturation)
+
+        # Convert RGB floats to integer values (0-255)
+        # Use round() for better accuracy and clamp values between 0 and 255
+        r = max(0, min(255, int(round(rgb_float[0] * 255))))
+        g = max(0, min(255, int(round(rgb_float[1] * 255))))
+        b = max(0, min(255, int(round(rgb_float[2] * 255))))
+
+        # Format the RGB tuple into a hex color string (e.g., #FF0000)
+        # Use :02x formatting to ensure two digits for each component (padding with 0 if needed)
+        # Use .upper() for standard uppercase hex codes
+        hex_color = f"#{r:02x}{g:02x}{b:02x}".upper()
+        hex_colors.append(hex_color)
+
+    return hex_colors
+
+
+if __name__ == "__main__":
+    print(generate_rainbow_colors(4))

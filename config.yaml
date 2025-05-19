@@ -15,26 +15,26 @@ output:
   include_spectrogram: false
   length: 10
   lowpass_variable: 0
-  n: 1
+  n: 1000
   negative_overlay_range:
   - 0
-  - 3
+  - 2
   overwrite_output_path: true
   positive_overlay_range:
   - 0
   - 2
   rainbow_frequency: false
   repetitions:
-  - 0
-  - 0
+  - 1
+  - 3
   single_class: true
   snr_range:
-  - 0.9
+  - 0.1
   - 1
-  val_ratio: 0.8
+  val_ratio: 0.9
   concatenate: false
 paths:
-  dataset: core_augmentation_dataset
+  dataset: rurunohinohi_augmentation_dataset # Primary dataset used for paper
   do_train_val_split: false
   negative: negative
   noise: noise

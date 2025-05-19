@@ -1,7 +1,0 @@
-Set,Class,Samples,Percentage
-Training,Positive,495,68.75
-Training,Negative,225,31.25
-Validation,Positive,55,68.75
-Validation,Negative,25,31.25
-Total,Training,720,100.0
-Total,Validation,80,100.0

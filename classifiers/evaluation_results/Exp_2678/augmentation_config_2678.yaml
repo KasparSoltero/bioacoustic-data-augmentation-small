@@ -1,0 +1,46 @@
+input:
+  allowed_files:
+  - .WAV
+  - .wav
+  - .mp3
+  - .flac
+  - .m4a
+  limit_positives: 0
+output:
+  concatenate: true
+  highpass_variable: 0
+  include_boxes: false
+  include_kaytoo: true
+  include_masks: false
+  include_soundfile: false
+  include_spectrogram: false
+  length: 10
+  lowpass_variable: 0
+  n: 1000
+  negative_overlay_range:
+  - 0
+  - 2
+  overwrite_output_path: true
+  positive_overlay_range:
+  - 0
+  - 2
+  rainbow_frequency: false
+  repetitions:
+  - 1
+  - 3
+  single_class: true
+  snr_range:
+  - 0.1
+  - 1
+  val_ratio: 0.9
+paths:
+  dataset: /Volumes/Rectangle/little_owl
+  do_train_val_split: false
+  negative: negative
+  noise: noise
+  output: augmented_dataset_output
+  vocalisations: vocalisations
+plot:
+  color_filter: dusk
+  show_labels: false
+  toggle: false

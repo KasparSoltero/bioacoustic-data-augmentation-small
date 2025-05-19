@@ -1,5 +1,5 @@
-experiment: 100
-project_root: "full/path/to/classifiers/folder"
+experiment: 9999
+project_root: "" # Path to the root of the project
 num_cores: 8
 run_training: true
 epochs: 20

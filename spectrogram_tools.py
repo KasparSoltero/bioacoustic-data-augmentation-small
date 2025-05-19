@@ -12,93 +12,6 @@ from pydub import AudioSegment
 from pydub.playback import play
 import copy
 
-# manual verification workflow functions
-def load_and_process_audio(file_path, images_per_file, chunk_length, overlap, resample_rate, color_mode='HSV'):
-    spectrograms = load_spectrogram(file_path, max=images_per_file, chunk_length=chunk_length, overlap=overlap, resample_rate=resample_rate, unit_type='power')
-    if spectrograms is None:
-        return None
-    
-    images = []
-    for spec in spectrograms:
-        spec = spectrogram_transformed(spec, highpass_hz=50, lowpass_hz=16000)
-        spec = spectrogram_transformed(spec, set_db=-10)
-        images.append(spectrogram_transformed(spec, to_pil=True, log_scale=True, normalise='power_to_PCEN', resize=(640, 640), color_mode=color_mode))
-    
-    return images
-
-# load external annoations from spreadsheet
-def get_ground_truth_boxes(annotations, file_name, chunk_length):
-    gt_boxes = []
-    if annotations is not None:
-        file_annotations = annotations[annotations['filename'] == file_name]
-        for i in range(0, 60*10, chunk_length):
-            specific_boxes = []
-            for _, row in file_annotations.iterrows():
-                if (row['start_time'] >= i and row['start_time'] <= i + chunk_length) or (row['end_time'] >= i and row['end_time'] <= i + chunk_length):
-                    x_start = max(0, (row['start_time'] - i) / chunk_length)
-                    x_end = min(1, (row['end_time'] - i) / chunk_length)
-                    y_end, y_start = map_frequency_to_log_scale(24000, [row['freq_min'], row['freq_max']])
-                    y_end = 1 - (y_end / 24000)
-                    y_start = 1 - (y_start / 24000)
-                    specific_boxes.append([x_start, y_start, x_end, y_end])
-            gt_boxes.append(specific_boxes)
-    return gt_boxes
-
-def predict_dont_merge_boxes(model, images, conf_threshold):
-    results = model.predict(images, device='mps', save=False, show=False, verbose=False, conf=conf_threshold, iou=1)
-    boxes = [result.boxes.xyxyn.cpu().numpy() for result in results]
-    classes = [result.boxes.cls.cpu().numpy() for result in results]
-    confidences = [result.boxes.conf.cpu().numpy() for result in results]
-    return boxes, classes, confidences
-
-def predict_and_merge_boxes(model, images, conf_threshold, iou_threshold=0.1, ios_threshold=0.4):
-    if isinstance(conf_threshold, list):
-        set_of_merged_boxes = []
-        set_of_merged_classes = []
-        minimum_conf_threshold = conf_threshold[0]
-        results = model.predict(images, device='mps', save=False, show=False, verbose=False, conf=minimum_conf_threshold, iou=1)
-        for i, conf_threshold in enumerate(conf_threshold):
-            merged_boxes = []
-            merged_classes = []
-            boxes = [result.boxes[result.boxes.conf >= conf_threshold].xyxyn.cpu().numpy() for result in results]
-            classes = [result.boxes[result.boxes.conf >= conf_threshold].cls.cpu().numpy() for result in results]
-            for image_boxes, image_classes in zip(boxes, classes):
-                merged_image_boxes, merged_image_classes = merge_boxes_by_class(image_boxes, image_classes, iou_threshold=iou_threshold, ios_threshold=ios_threshold, format='xyxy')
-                merged_boxes.append(merged_image_boxes)
-                merged_classes.append(merged_image_classes)
-            set_of_merged_boxes.append(merged_boxes)
-            set_of_merged_classes.append(merged_classes)
-        return set_of_merged_boxes, set_of_merged_classes
-    else:
-        results = model.predict(images, device='mps', save=False, show=False, verbose=False, conf=conf_threshold, iou=1)
-        boxes = [result.boxes.xyxyn.cpu().numpy() for result in results]
-        classes = [result.boxes.cls.cpu().numpy() for result in results]
-        merged_boxes = []
-        merged_classes = []
-        for image_boxes, image_classes in zip(boxes, classes):
-            merged_image_boxes, merged_image_classes = merge_boxes_by_class(image_boxes, image_classes, iou_threshold=iou_threshold, ios_threshold=ios_threshold, format='xyxy')
-            merged_boxes.append(merged_image_boxes)
-            merged_classes.append(merged_image_classes)
-        return merged_boxes, merged_classes
-
-# find predicted boxes which are outside of external annotations
-def _get_verification_binaries_old(merged_boxes, gt_boxes):
-    verification_binaries = []
-    found_gt_binaries = []
-    for image_boxes, gt_box_set in zip(merged_boxes, gt_boxes):
-        image_verification_binaries = []
-        for box in image_boxes:
-            x1, y1, x2, y2 = box[:4]
-            model_box = [x1, y1, x2, y2]
-            is_inside = any(is_box_center_inside(model_box, gt_box) for gt_box in gt_box_set)
-            image_verification_binaries.append(is_inside)
-        verification_binaries.append(image_verification_binaries)
-        image_found_gt_binaries = []
-        for gt_box in gt_box_set:
-            image_found_gt_binaries.append(any(is_box_center_inside(model_box, gt_box) for model_box in image_boxes))
-        found_gt_binaries.append(image_found_gt_binaries)
-    return verification_binaries, found_gt_binaries
-
 def check_if_pred_boxes_are_inside(pred_boxes, gt_boxes):
     verification_binaries = []
     for (box,conf,cls) in pred_boxes:
@@ -107,238 +20,6 @@ def check_if_pred_boxes_are_inside(pred_boxes, gt_boxes):
         is_inside = any(is_box_center_inside(model_box, gt_box) for gt_box in gt_boxes)
         verification_binaries.append(is_inside)
     return verification_binaries
-
-def calculate_detection_stats(merged_boxes, merged_classes, verification_binaries, found_gt_binaries, gt_boxes, filename, num_saved):
-    raw_tp_total = sum(sum(binaries) for binaries in verification_binaries)
-    tp_total, fp_total, fn_total = 0, 0, 0
-    fn_total = sum(sum(_) for _ in found_gt_binaries)
-    fn_total = sum(len(gt_box_set) for gt_box_set in gt_boxes) - fn_total
-    fp_total = sum(len(_) for _ in verification_binaries) - raw_tp_total
-    human_tp_total, human_fp_total, human_fn_total = 0, 0, num_saved
-    human_tp_total = sum(len(gt_box_set) for gt_box_set in gt_boxes) # all gt boxes are human tp, fp=0, all num_saved are human fn
-
-    for image_boxes, image_classes, image_verification_binaries, gt_box_set in zip(merged_boxes, merged_classes, verification_binaries, gt_boxes):
-        detected_gt = set()
-        # count only the first of each gt
-        for box, cls, is_verified in zip(image_boxes, image_classes, image_verification_binaries):
-            if is_verified:
-                x1, y1, x2, y2 = box[:4]
-                model_box = [x1, y1, x2, y2]
-                is_inside = False
-                for i, gt_box in enumerate(gt_box_set):
-                    if is_box_center_inside(model_box, gt_box):
-                        is_inside = True
-                        if i not in detected_gt:
-                            tp_total += 1
-                            detected_gt.add(i)
-                        else:
-                            pass # detected multiple times, do nothing for remaining times
-                        break
-                # if not is_inside:
-                #     pass # Verified box but not inside any GT box. either new or equivalent, accounted for by num_saved (new) and raw_tp_total (inc. equivalent)
-
-    tp_total += num_saved # Add the number of new annotations to the true positives
-    
-    print_detection_stats(raw_tp_total, tp_total, fp_total, fn_total, human_tp_total, human_fp_total, human_fn_total, filename)
-
-def plot_detections(images, gt_boxes, merged_boxes, merged_classes, verification_binaries, start_idx):
-    fig, axs = plt.subplots(2, 5, figsize=(25, 10))
-    for i, image in enumerate(images):
-        ax = axs[i // 5, i % 5]
-        
-        ax.imshow(np.array(image))
-        ax.set_xticks(np.linspace(0, 640, 6))
-        ax.set_xticklabels([f'{i:.1f}' for i in np.linspace(0, 10, 6)])
-        ax.set_yticks(np.linspace(0, 640, 13))
-        ax.set_yticklabels([f'{i:.0f}' for i in np.linspace(24, 0, 13)])
-
-        ax.set_title(f'{i}: {(start_idx+i)*10}s - {(start_idx+i+1)*10}s', fontsize=8)
-
-        # Plot ground truth boxes
-        for box in gt_boxes[i]:
-            x1, y1, x2, y2 = [coord * 640 for coord in box]
-            rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, facecolor='black', edgecolor='black', linewidth=1)
-            ax.add_patch(rect)
-
-        # Plot merged model prediction boxes
-        for j, (box, cls) in enumerate(zip(merged_boxes[i], merged_classes[i])):
-            x1, y1, x2, y2 = box[:4]
-            x1, y1, x2, y2 = [coord * 640 for coord in [x1, y1, x2, y2]]
-
-            if verification_binaries[i][j]:
-                color = 'red'
-                linewidth = 1
-            else:
-                color = 'white'
-                linewidth = 1
-
-            rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor=color, linewidth=linewidth, linestyle='--')
-            ax.add_patch(rect)
-            ax.text(x1, y2+0.1, f"{i}.{j}", color='white', fontsize=8)
-
-    # Remove any unused subplots
-    for i in range(len(images), 10):
-        fig.delaxes(axs.flatten()[i])
-
-    plt.tight_layout()
-    return fig
-
-# user inputs negatives, new annotations (model predictions outside external annotations) are saved
-def process_user_input(current_boxes, current_classes, current_verification_binaries, start_idx, filename):
-    audio_file = f"../data/testing/7050014/{filename}"
-    audio, sample_rate = sf.read(audio_file)
-
-    binaries_should_not_be_saved = copy.deepcopy(current_verification_binaries)
-    updated_verification_binaries = copy.deepcopy(current_verification_binaries)
-
-    while True:
-        if all(all(binary for binary in binaries) for binaries in binaries_should_not_be_saved):
-            print("All boxes have been verified. Continuing to the next file.")
-            break
-        print(f'should we save: ')
-        for i, (boxes, classes, binary) in enumerate(zip(current_boxes, current_classes, binaries_should_not_be_saved)):
-            for j, (box, cls, binary) in enumerate(zip(boxes, classes, binary)):
-                if not binary:
-                    print(f'{i}.{j}', end=', ')
-        print('\r\r')
-
-        user_input = input("'v' to verify and continue,\n 'x i.j' to exclude box,\n 'e i.j' to mark true but not save,\n 'p i.j' to play audio for box: ")
-        
-        if user_input.lower() == 'v':
-            break
-        
-        elif user_input.startswith('x '):
-            box_id = user_input.split()[1]
-            try:
-                img_idx, box_idx = map(int, box_id.split('.'))
-                if 0 <= img_idx < len(current_verification_binaries) and 0 <= box_idx < len(current_verification_binaries[img_idx]):
-                    binaries_should_not_be_saved[img_idx][box_idx] = True
-                    print(f"Box {box_id} will not be saved as a new annotation.")
-                else:
-                    print(f"Warning: Invalid box number {box_id}")
-            except ValueError:
-                print(f"Warning: Invalid {box_id}")
-
-        elif user_input.startswith('e '): #equivalent to a gt box; accurate but not new, update the verification binary but don't save
-            box_id = user_input.split()[1]
-            try:
-                img_idx, box_idx = map(int, box_id.split('.'))
-                if 0 <= img_idx < len(current_boxes) and 0 <= box_idx < len(current_boxes[img_idx]):
-                    updated_verification_binaries[img_idx][box_idx] = True
-                    binaries_should_not_be_saved[img_idx][box_idx] = True
-                    print(f"Box {box_id} is equivalent to a ground truth box. not saving")
-                else:
-                    print(f"Warning: Invalid box number {box_id}")
-            except ValueError:
-                print(f"Warning: Invalid {box_id}")
-
-        elif user_input.startswith('p '): #play audio for selected box
-            box_id = user_input.split()[1]
-            try:
-                img_idx, box_idx = map(int, box_id.split('.'))
-                if 0 <= img_idx < len(current_boxes) and 0 <= box_idx < len(current_boxes[img_idx]):
-                    box = current_boxes[img_idx][box_idx]
-                    start_time = (start_idx + img_idx) * 10 + (box[0] * 10)
-                    start_time = max(0, start_time-1)  # Start 1 second earlier
-                    end_time = (start_idx + img_idx) * 10 + (box[2] * 10)
-                    end_time = min(len(audio) / sample_rate, end_time+1)  # End 1 second later
-                    # Extract and play the audio segment
-                    start_sample = int(start_time * sample_rate)
-                    end_sample = int(end_time * sample_rate)
-                    audio_segment = audio[start_sample:end_sample]
-                    # Convert audio to int16 if it's float
-                    if audio_segment.dtype == np.float32 or audio_segment.dtype == np.float64:
-                        audio_segment = (audio_segment * 32767).astype(np.int16)
-
-                    # Convert to AudioSegment and play
-                    audio_segment_pydub = AudioSegment(
-                        audio_segment.tobytes(),
-                        frame_rate=sample_rate,
-                        sample_width=audio_segment.dtype.itemsize,
-                        channels=1 if len(audio_segment.shape) == 1 else audio_segment.shape[1]
-                    )
-                    play(audio_segment_pydub)
-                    
-                    print(f"Played audio for box {user_input}")
-                else:
-                    print(f"Warning: Invalid box number {user_input}")
-            except ValueError as e:
-                print(f"Warning: Invalid input format for box number {user_input}, {e}")
-
-        elif user_input.lower() == 'q':
-            print("skipping this file")
-            return None, None
-
-    # Save new annotations for all boxes that are still marked as outside ground truth
-    num_saved = 0
-    for i, (boxes, classes, binaries) in enumerate(zip(current_boxes, current_classes, binaries_should_not_be_saved)):
-        for j, (box, cls, binary) in enumerate(zip(boxes, classes, binaries)):
-            if not binary:  # If the box is still marked as should-be-saved (False)
-                # Save as new annotation
-                print(f'saving box: {i}.{j}, {box}')
-                start_time = (start_idx + i) * 10 + (box[0] * 10)
-                end_time = (start_idx + i) * 10 + (box[2] * 10)
-                start_freq, end_freq = (1 - box[3]) * 24000, (1 - box[1]) * 24000
-                start_freq, end_freq = map_frequency_to_linear_scale(24000, [start_freq, end_freq])
-                save_new_annotation(filename, start_time, end_time, start_freq, end_freq, cls)
-                num_saved += 1
-                
-                # Update verification binary to True (verified)
-                updated_verification_binaries[i][j] = True
-
-    return updated_verification_binaries, num_saved
-
-def save_new_annotation(filename, start_time, end_time, start_freq, end_freq, cls):
-    with open('new_manual_annotations.txt', 'a') as f:
-        f.write(f"{filename}, {start_time:.3f}, {end_time:.3f}, {start_freq:.0f}, {end_freq:.0f}, {cls}\n")
-
-def calculate_f1_score(tp, fp, fn):
-    if tp + fp > 0:
-        precision = tp / (tp + fp)
-    else:
-        precision = 0
-    if tp + fn > 0:
-        recall = tp / (tp + fn)
-    else:
-        recall = 0
-    if precision + recall > 0:
-        f1_score = 2 * (precision * recall) / (precision + recall)
-    else:
-        f1_score = 0
-    return precision, recall, f1_score
-
-def print_detection_stats(raw_tp, tp, fp, fn, human_tp, human_fp, human_fn, filename):
-    precision, recall, f1_score = calculate_f1_score(tp, fp, fn)
-    human_precision, human_recall, human_f1_score = calculate_f1_score(human_tp, human_fp, human_fn)
-
-    raw_precision = raw_tp / (raw_tp + fp) if raw_tp + fp > 0 else 0
-    raw_recall = raw_tp / (raw_tp + fn) if raw_tp + fn > 0 else 0
-    raw_f1_score = 2 * (raw_precision * raw_recall) / (raw_precision + raw_recall) if raw_precision + raw_recall > 0 else 0
-    total_detections = tp + fn
-
-    print(f"\nFile {filename}: {total_detections} detections, {raw_recall}% recall\n ({tp} {fp} {fn})\n ({raw_precision:.2f} {raw_recall:.2f} {raw_f1_score:.2f}) raw\n ({precision:.2f} {recall:.2f} {f1_score:.2f}) simple\n ({human_precision:.2f} {human_recall:.2f} {human_f1_score:.2f}) human")
-
-    save_stats_file = 'detection_stats.txt'
-    with open(save_stats_file, 'a') as f:
-        f.write(f"{filename}, {total_detections}, {raw_tp}, {tp}, {fp}, {fn}, {human_tp}, {human_fp}, {human_fn}, {precision:.3f}, {recall:.3f}, {f1_score:.3f}, {human_precision:.3f}, {human_recall:.3f}, {human_f1_score:.3f}, {raw_precision:.3f}, {raw_recall:.3f}, {raw_f1_score:.3f}\n")
-    
-def print_these_detection_stats(file_idx, total_files, start_idx, end_idx, total_images, current_boxes, current_verification_binaries, current_gt_binaries, current_gt_boxes):
-    total_detections = sum(len(box) for box in current_boxes)
-    total_verified = sum(sum(binaries) for binaries in current_verification_binaries)
-    print(f'')
-
-    print(f"\nFile {file_idx + 1}/{total_files}: Images {start_idx + 1}-{end_idx} of {total_images}. ")
-    
-    # Print detection counts for each image
-    if total_detections > 0:
-        print(f"{total_detections} detections {100*total_verified/total_detections:.2f}% in {sum(sum(_) for _ in current_gt_binaries)} of {sum(len(_) for _ in current_gt_boxes)} gt boxes", end='')
-    else:
-        print("No detections")
-    for i, boxes in enumerate(current_boxes): # 5 by 2 detection number grid
-        if i % 5 == 0:
-            print()  # Start a new line after every 5 numbers
-        print(f"{len(boxes):2d}", end=" ")
-    print("\n" + "="*50 + "\n")
 
 # box section checks. ALL XYXY
 def is_box_inside(box1, box2):
@@ -619,12 +300,6 @@ def rle_decode(counts, shape):
     
     return mask.reshape(shape)
 
-# main spectrogram functions
-# def get_device():
-    # try mps first
-    # if torch.backends and torch.back
-
-
 def spec_to_image(spectrogram, image_normalise=0.2):
     # make ipeg image
     spec = np.squeeze(spectrogram.numpy())
@@ -657,6 +332,7 @@ def get_detections(paths, model_no):
         all_boxes.append(boxes)
     return all_boxes
 
+# spectrogram processing
 def pcen(spec, s=0.025, alpha=0.01, delta=0, r=0.05, eps=1e-6):
     """
     Apply Per-Channel Energy Normalization (PCEN) to a spectrogram.
@@ -1099,6 +775,7 @@ def load_spectrogram(
         return specs[0]
     return specs
 
+# waveform augmentation
 def crop_overlay_waveform(
         bg_shape,
         segment,

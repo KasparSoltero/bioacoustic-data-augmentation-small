@@ -13,20 +13,18 @@ from classifiers.classifier_small import main_training_function
 # Define parameter sweep configuration
 parameter_sweep = {
     'mode': 'individual',  # 'individual' or 'combination'
-    'concatenate': False,
+    'concatenate': False,  # 
     'parameters': {
         # Parameters to vary in format 'section.parameter': [values]
-        # 'output.positive_overlay_range': [[0, 1], [0, 2], [0, 3]],
-        # 'output.negative_overlay_range': [[0, 0], [0, 1], [0, 2]],
-        # 'output.snr_range': [[0.3, 1], [0.5, 1], [0.7, 1], [0.9, 1]],
-        # 'output.repetitions': [[1, 1], [1, 2], [1, 3]],
-        # 'output.n': [6000,7000,8000,9000,10000]
-        # 'output.n': [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000] #Figure 2 left
-        'input.limit_positives': [2, 3, 5, 10, 15, 20, 25, 30], #Figure 2 right
+        # 'output.snr_range': [[0.1, 1], [0.3,1], [0.5,1], [0.7,1], [0.9,1]],
+        # 'input.limit_positives': [1, 2, 3, 5, 10, 20, 30],
+        'output.n': [100,200,300,400]
     },
     # Base directory for outputs
     'project_dir': 'classifiers',
-    'results_dir': 'evaluation_results'
+    'results_dir': 'evaluation_results',
+    'repeat_runs': 4,  # Number of times to repeat the entire sweep
+    'experiment_starting_index': 3000,  # Starting index for experiments
 }
 
 # Create results directory
@@ -66,9 +64,13 @@ def run_experiment(experiment_id, config, use_case, parameters_desc):
     """Run a single experiment with the given parameters"""
     print(f"\n=== Experiment {experiment_id}: {parameters_desc} ===")
 
+    # Define experiment-specific results directory
+    experiment_results_dir = results_dir / f'Exp_{experiment_id}'
+    experiment_results_dir.mkdir(parents=True, exist_ok=True)
+
     # Save configs for reference
-    augmentation_config_path = f'{results_dir}/augmentation_config_{experiment_id}.yaml'
-    training_config_path = f'{results_dir}/training_config_{experiment_id}.yaml'
+    augmentation_config_path = experiment_results_dir / f'augmentation_config_{experiment_id}.yaml'
+    training_config_path = experiment_results_dir / f'training_config_{experiment_id}.yaml'
     
     with open(augmentation_config_path, 'w') as f:
         yaml.dump(config, f)
@@ -76,6 +78,8 @@ def run_experiment(experiment_id, config, use_case, parameters_desc):
     # Update use_case with experiment ID
     use_case['experiment'] = experiment_id
     use_case['project_root'] = parameter_sweep['project_dir']
+    # Keep use_case['experiment_dir'] pointing to the base results dir for now,
+    # as it might be used elsewhere in the training function.
     use_case['experiment_dir'] = parameter_sweep['results_dir']
     with open(training_config_path, 'w') as f:
         yaml.dump(use_case, f)
@@ -98,7 +102,8 @@ def run_experiment(experiment_id, config, use_case, parameters_desc):
         metrics = training_fn(use_case)
         
         # Save metrics
-        with open(f'{results_dir}/metrics_{experiment_id}.yaml', 'w') as f:
+        metrics_path = experiment_results_dir / f'metrics_{experiment_id}.yaml'
+        with open(metrics_path, 'w') as f:
             yaml.dump(metrics, f)
         
         print(f"Training completed successfully.")
@@ -108,9 +113,10 @@ def run_experiment(experiment_id, config, use_case, parameters_desc):
         return False
     
     # Save experiment parameters
-    with open(f'{results_dir}/experiment_{experiment_id}_parameters.yaml', 'w') as f:
+    params_path = experiment_results_dir / f'experiment_parameters.yaml'
+    with open(params_path, 'w') as f:
         yaml.dump({
-            'parameters': parameters_desc, 
+            'parameters': parameters_desc,
             'experiment_id': experiment_id,
             'status': 'completed'
         }, f)
@@ -127,7 +133,7 @@ def run_parameter_sweep():
     with open('classifiers/use_case.yaml', 'r') as f:
         default_use_case = yaml.safe_load(f)
 
-    experiment_id = 1000
+    experiment_id = parameter_sweep['experiment_starting_index'] 
     # check if theres a previous experiment with Exp_ anything
     max_experiment_id = 0
     other_experiments_dir = parameter_sweep['project_dir'] + '/' + parameter_sweep['results_dir']
@@ -144,17 +150,55 @@ def run_parameter_sweep():
     completed_experiments = []
     failed_experiments = []
 
-    if parameter_sweep['mode'] == 'individual':
-        # Option 1: Run one session for each parameter value, keeping others default
-        for param_key, param_values in parameter_sweep['parameters'].items():
-            for value in param_values:
+    repeat_runs = parameter_sweep.get('repeat_runs', 1)
+    base_concatenate_setting = parameter_sweep.get('concatenate', False) # Get the base setting
+
+    for run_index in range(repeat_runs):
+        print(f"\n--- Starting Repetition {run_index + 1} of {repeat_runs} ---")
+        is_first_param_in_repetition = True # Reset for each repetition
+
+        if parameter_sweep['mode'] == 'individual':
+            # Option 1: Run one session for each parameter value, keeping others default
+            param_items = list(parameter_sweep['parameters'].items()) # Get items to iterate consistently
+            
+            for param_key, param_values in param_items:
+                for value_index, value in enumerate(param_values):
+                    config = copy.deepcopy(default_config)
+                    # Concatenate only if base setting is True AND it's not the first param of this repetition run
+                    config['output']['concatenate'] = base_concatenate_setting and not is_first_param_in_repetition
+                    
+                    use_case = copy.deepcopy(default_use_case)
+                    update_nested_dict(config, param_key, value)
+                    
+                    parameters_desc = {param_key: value, 'repetition': run_index + 1}
+                    success = run_experiment(experiment_id, config, use_case, parameters_desc)
+                    
+                    if success:
+                        completed_experiments.append(experiment_id)
+                    else:
+                        failed_experiments.append(experiment_id)
+                    
+                    experiment_id += 1
+                    is_first_param_in_repetition = False # No longer the first after the first run
+
+        elif parameter_sweep['mode'] == 'combination':
+            # Option 2: Run one session for each combination of parameters
+            param_keys = list(parameter_sweep['parameters'].keys())
+            param_values = list(parameter_sweep['parameters'].values())
+            combinations = list(itertools.product(*param_values)) # Generate combinations once
+
+            for combo_index, combination in enumerate(combinations):
                 config = copy.deepcopy(default_config)
-                if parameter_sweep['concatenate']:
-                    config['output']['concatenate'] = True
+                # Concatenate only if base setting is True AND it's not the first param of this repetition run
+                config['output']['concatenate'] = base_concatenate_setting and not is_first_param_in_repetition
+
                 use_case = copy.deepcopy(default_use_case)
-                update_nested_dict(config, param_key, value)
+                parameters_desc = {'repetition': run_index + 1}
                 
-                parameters_desc = {param_key: value}
+                for i, key in enumerate(param_keys):
+                    update_nested_dict(config, key, combination[i])
+                    parameters_desc[key] = combination[i]
+                
                 success = run_experiment(experiment_id, config, use_case, parameters_desc)
                 
                 if success:
@@ -163,33 +207,12 @@ def run_parameter_sweep():
                     failed_experiments.append(experiment_id)
                 
                 experiment_id += 1
-                
-    elif parameter_sweep['mode'] == 'combination':
-        # Option 2: Run one session for each combination of parameters
-        param_keys = list(parameter_sweep['parameters'].keys())
-        param_values = list(parameter_sweep['parameters'].values())
-        
-        for combination in itertools.product(*param_values):
-            config = copy.deepcopy(default_config)
-            if parameter_sweep['concatenate']:
-                config['output']['concatenate'] = True
-            use_case = copy.deepcopy(default_use_case)
-            parameters_desc = {}
-            
-            for i, key in enumerate(param_keys):
-                update_nested_dict(config, key, combination[i])
-                parameters_desc[key] = combination[i]
-            
-            success = run_experiment(experiment_id, config, use_case, parameters_desc)
-            
-            if success:
-                completed_experiments.append(experiment_id)
-            else:
-                failed_experiments.append(experiment_id)
-            
-            experiment_id += 1
-    else:
-        print("Invalid mode. Please choose 'individual' or 'combination'")
+                is_first_param_in_repetition = False # No longer the first after the first run
+        else:
+            print("Invalid mode. Please choose 'individual' or 'combination'")
+            break # Exit loop if mode is invalid
+
+    # The rest of the summary code remains outside the loop
 
     # Summarize results
     print(f"\n=== Parameter Sweep Summary ===")

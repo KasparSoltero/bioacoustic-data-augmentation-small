@@ -1,0 +1,5 @@
+experiment_id: 2702
+parameters:
+  output.n: 300
+  repetition: 1
+status: completed

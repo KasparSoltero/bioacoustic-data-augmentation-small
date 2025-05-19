@@ -1,0 +1,5 @@
+experiment_id: 2676
+parameters:
+  output.n: 8000
+  repetition: 3
+status: completed

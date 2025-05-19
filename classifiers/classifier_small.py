@@ -6,6 +6,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 import gc
 import os
 from pathlib import Path
+import shutil # Add this import
 # from tqdm.notebook import tqdm
 from tqdm import tqdm
 import ast
@@ -30,6 +31,7 @@ import albumentations as A
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn import metrics as skm
+import cv2
 
 #Torch and PyTorch specific
 import timm
@@ -62,12 +64,11 @@ import colorednoise as cn
 class FilePaths:
     def __init__(self, options=None):
         self.PROJECT_DIR = Path(options['project_root'])
-        self.DATA_DIR = self.PROJECT_DIR / 'augmented_dataset' 
+        self.DATA_DIR = self.PROJECT_DIR / 'augmented_dataset_output' 
         self.LABELS_PATH = str(self.DATA_DIR / 'labels.csv')
         self.TRAIN_AUDIO_DIR = str(self.DATA_DIR / 'sound_files')
-        # self.BACKGROUND_NOISE_FLDR =  str(self.DATA_DIR / 'background_noise')
         
-        self.EVAL_DIR = self.PROJECT_DIR / 'L_O_eval'
+        self.EVAL_DIR = self.PROJECT_DIR / 'real_life_eval_little_owl'
 
         _experiment = options['experiment']
         if options.get('experiment_dir', None):
@@ -84,7 +85,6 @@ class FilePaths:
         self.bird_names_map = str(self.DATA_DIR  / 'Bird_Names/bird_map.csv')
         self.bird_map_for_model = self.model_deploy / f'exp_{_experiment}_bird_map.csv'
         self.model_config = self.model_deploy / f'exp_{_experiment}_config.yaml'
-        # self.background_noise_paths = [path for path in Path(self.BACKGROUND_NOISE_FLDR).rglob('*') if path.suffix in {'.ogg', '.flac', '.wav', '.mp3', '.WAV'}]
 
 class TrainingParameters:
     def __init__(self, options=None):
@@ -146,11 +146,11 @@ class NzBirdData:
     DO_WINDOWING_BEFORE_DATASET_CREATION = False
 
 class DefaultAudio:
-    IMAGE_SHAPE = (1,2)  #5 second chunks position in final image: height x width
+    IMAGE_SHAPE = (1,1)  #5 second chunks position in final image: height x width
     DURATION = 10  # Duration the loaded sound file will be randomly cropped or padded to for training.
     OVERLAP = 0.5  # The proportion of the duration that the chunks will overlap
     SR = 48000
-    IMAGE_WIDTH = 256 #384 #512 # 256 #The spectrogram will get cropped/padded to this square regardless of any audio considerations
+    IMAGE_WIDTH = 386 #384 #512 # 256 #The spectrogram will get cropped/padded to this square regardless of any audio considerations
     CHUNK_WIDTH = IMAGE_WIDTH if IMAGE_SHAPE[1] == 1 else IMAGE_WIDTH // 2  #Number of frames wide for each sub-image
     N_MELS = IMAGE_WIDTH // 2 if IMAGE_SHAPE[0] == 2 else IMAGE_WIDTH #Height of the chunk spectrograms
     N_FFT = 2048 #3072 #2048 *2 #3072 or 2048 #N_fft/2 + 1 bins will get made prior to downsampling to the value of N_MELS
@@ -670,19 +670,23 @@ class AbluTransforms():
     MEAN = (0.485, 0.456, 0.406) # RGB
     STD = (0.229, 0.224, 0.225) # RGB
     
-    def __init__(self, audio):
-        self.image_width = audio.IMAGE_WIDTH
+    def __init__(self, audio, model_input_size=(224, 224)):
+        # self.image_width = audio.IMAGE_WIDTH
+        self.target_height = model_input_size[0]
+        self.target_width = model_input_size[1]
 
         self.train = A.Compose([
                         A.CoarseDropout(p=0.4), #max_holes=4?
-                        A.PadIfNeeded(min_height=self.image_width, min_width=self.image_width),
-                        A.CenterCrop(width=self.image_width, height=self.image_width), 
+                        A.Resize(height=self.target_height, width=self.target_width),
+                        # A.PadIfNeeded(min_height=self.image_width, min_width=self.image_width),
+                        # A.CenterCrop(width=self.image_width, height=self.image_width), 
                         # A.Normalize(self.MEAN, self.STD, max_pixel_value=1.0),    #, always_apply=True?
                         ])
         
         self.valid = A.Compose([
-                        A.PadIfNeeded(min_height=self.image_width, min_width=self.image_width),
-                        A.CenterCrop(width=self.image_width, height=self.image_width),  
+                        A.Resize(height=self.target_height, width=self.target_width),
+                        # A.PadIfNeeded(min_height=self.image_width, min_width=self.image_width),
+                        # A.CenterCrop(width=self.image_width, height=self.image_width),  
                         # A.Normalize(self.MEAN, self.STD, max_pixel_value=1.0), #,always_apply=True?
                         ])
 
@@ -691,7 +695,7 @@ class PrepareImage():
     mean = .5
     std = .22
     def __init__(self, height, width):
-        self.height = height
+        self.height = width
         self.width = width
         self.prep = A.Compose([
             A.PadIfNeeded(min_height=self.height, min_width=self.width),
@@ -766,7 +770,7 @@ class WaveformDataset(Dataset):
         # self.image_shape = audio.IMAGE_SHAPE
         # self.num_chunks = self.image_shape[0] * self.image_shape[1]
         # self.chunk_lenth = self.d_len // self.num_chunks
-        self.prep_image = PrepareImage(height=audio.N_MELS, width = self.width)
+        self.prep_image = PrepareImage(height=self.height, width = self.width)
         # self.pseudo_dict = pseudo_dict
         self.pcen = audio.PCEN
         self.use_deltas = audio.USE_DELTAS
@@ -864,7 +868,7 @@ class WaveformDataset(Dataset):
         image = self.image_transform(image=image)['image']
         image = image.transpose(2, 0, 1).astype(np.float32)
         
-        target = torch.tensor(row['label']).float() 
+        target = torch.tensor(row['label']).float()
         
         return image, target
 
@@ -1229,7 +1233,6 @@ def save_models(paths, train_cfg, audio_cfg, classes, deploy_ckpt_selection=1):
 
     return save_path  #just returns what ever came last, to check for functionality
 
-
 def get_class_weights(df):
     df = df.iloc[:, 2:] # removing the 'filepath' and 'primary_label' columns
     col_sums = df.sum()
@@ -1340,15 +1343,33 @@ def real_life_evaluate(model, eval_dir, audio_cfg):
         labels = [1] * len(positive_files) + [0] * len(negative_files)
         preds = []
         probs = []
+        losses = [] # Add list to store losses
+
+        # wave transforms normalise p 1
+        wave_transforms = Compose([Normalize(p=1)])
+        prep_image = PrepareImage(height=audio_cfg.N_MELS, width=audio_cfg.CHUNK_WIDTH)
+        image_transform = AbluTransforms(audio_cfg).valid
+
         for file in files:
             audio = load_sf(file)
+            audio = wave_transforms(audio, sr=audio_cfg.SR)
             image = compute_melspec(audio, audio_cfg)
+            image = prep_image.prep(image=image)['image']
             image = mono_to_color(image, use_deltas=audio_cfg.USE_DELTAS)
+            image = image_transform(image=image)['image']
             image = image.transpose(2, 0, 1).astype(np.float32)
             image = torch.tensor(image).unsqueeze(0).to(model._device)
+
             output = model(image)
             prob = torch.sigmoid(output['logit']).item()
             pred = 1 if prob > 0.5 else 0
+
+            # Calculate loss for this sample
+            target_label = labels[files.index(file)]
+            target = torch.tensor(target_label).float().to(model._device)
+            loss = model.loss_function(output, target)
+            losses.append(loss.item()) # Store loss
+
             preds.append(pred)
             probs.append(prob)
 
@@ -1358,12 +1379,14 @@ def real_life_evaluate(model, eval_dir, audio_cfg):
         recall = recall_score(labels, preds)
         f1 = f1_score(labels, preds)
         auc = roc_auc_score(labels, probs)
+        avg_loss = sum(losses) / len(losses) if losses else 0.0 # Calculate average loss
         print(f'Real-life evaluation:')
+        print(f'  Loss: {avg_loss:.4f}') # Print loss
         print(f'  Precision: {precision:.4f}')
         print(f'  Recall: {recall:.4f}')
         print(f'  F1: {f1:.4f}')
         print(f'  AUC: {auc:.4f}')
-        return {'rl-precision': precision, 'rl-recall': recall, 'rl-f1': f1, 'rl-auc': auc}
+        return {'rl-precision': precision, 'rl-recall': recall, 'rl-f1': f1, 'rl-auc': auc, 'rl-loss': avg_loss} # Return loss
 
 def real_life_evaluate_with_roc(models, eval_dir, audio_cfg, consensus=False, plot=True):
     '''Evaluate the model on the real-life data and plot ROC curve'''
@@ -1384,12 +1407,21 @@ def real_life_evaluate_with_roc(models, eval_dir, audio_cfg, consensus=False, pl
     preds = []
     probs = []
 
+    # wave transforms normalise p 1
+    wave_transforms = Compose([Normalize(p=1)])
+    prep_image = PrepareImage(height=audio_cfg.N_MELS, width=audio_cfg.CHUNK_WIDTH)
+    image_transform = AbluTransforms(audio_cfg).valid
+
     for file in files:
         audio = load_sf(file)
+        audio = wave_transforms(audio, sr=audio_cfg.SR)
         image = compute_melspec(audio, audio_cfg)
+        image = prep_image.prep(image=image)['image']
         image = mono_to_color(image, use_deltas=audio_cfg.USE_DELTAS)
+        image = image_transform(image=image)['image']
         image = image.transpose(2, 0, 1).astype(np.float32)
         image = torch.tensor(image).unsqueeze(0).to(model1._device)
+
         output = model1(image)
         prob = torch.sigmoid(output['logit']).item()
         pred = 1 if prob > 0.5 else 0
@@ -1480,6 +1512,258 @@ def real_life_evaluate_with_roc(models, eval_dir, audio_cfg, consensus=False, pl
         'fpr_98': fpr_98
     }
 
+activation = {}
+def get_activation_hook(name):
+    def hook(model, input, output):
+        # Store the output tensor. Detach and clone to avoid holding onto the graph.
+        activation[name] = output.detach().clone()
+    return hook
+
+def eval_real_life_attention_maps(model, eval_dir, audio_cfg,
+                                  cmap_spec='viridis', # New argument for spectrogram colormap
+                                  contour_levels=[0.5, 0.75], # Activation levels for contours
+                                  contour_colors='white', # Color for contour lines
+                                  pos_idx=None, neg_idx=None, plot=True):
+    """
+    Evaluates the model on one positive and one negative example from the real-life dataset,
+    plotting the input spectrogram overlaid with the model's activation map.
+
+    Args:
+        model: The trained BirdSoundModel instance.
+        eval_dir: Path to the evaluation directory containing 'positive' and 'negative' subfolders.
+        audio_cfg: An object containing audio configuration (SR, N_MELS, etc.).
+        pos_idx (int, optional): Index of the positive file to use. If None, selects randomly. Defaults to None.
+        neg_idx (int, optional): Index of the negative file to use. If None, selects randomly. Defaults to None.
+        plot (bool, optional): Whether to display the plot. Defaults to True.
+    """
+    model.eval()
+    device = model._device # Assuming model has _device attribute
+    eval_dir = Path(eval_dir)
+    positive_path = eval_dir / 'positive'
+    negative_path = eval_dir / 'negative'
+
+    try:
+        positive_files = sorted([os.path.join(positive_path, f) for f in os.listdir(positive_path) if f.lower().endswith(('.wav', '.ogg', '.mp3', '.flac'))])
+        negative_files = sorted([os.path.join(negative_path, f) for f in os.listdir(negative_path) if f.lower().endswith(('.wav', '.ogg', '.mp3', '.flac'))])
+    except FileNotFoundError:
+        print(f"Error: Evaluation directories not found in {eval_dir}")
+        return
+
+    if not positive_files:
+        print(f"Error: No positive audio files found in {positive_path}")
+        return
+    if not negative_files:
+        print(f"Error: No negative audio files found in {negative_path}")
+        return
+
+    # --- Select Files ---
+    if pos_idx is None:
+        pos_idx = random.randrange(len(positive_files))
+    else:
+        pos_idx = min(pos_idx, len(positive_files) - 1)
+
+    if neg_idx is None:
+        neg_idx = random.randrange(len(negative_files))
+    else:
+        neg_idx = min(neg_idx, len(negative_files) - 1)
+
+    pos_file = positive_files[pos_idx]
+    neg_file = negative_files[neg_idx]
+
+    print(f"Selected Positive Example ({pos_idx}): {Path(pos_file).name}")
+    print(f"Selected Negative Example ({neg_idx}): {Path(neg_file).name}")
+
+    # --- Prepare Image and Activation Map Extraction ---
+    results = {}
+    target_layer_name = 'conv_head' # Common name for final conv layer in EfficientNet before pooling
+    hook_handle = None
+
+    # Find the target layer within the base_model
+    target_layer = None
+    for name, layer in model.base_model.named_modules():
+        # Adjust this check if your layer name is different or nested differently
+        if name == target_layer_name:
+            target_layer = layer
+            break
+
+    if target_layer is None:
+        print(f"Warning: Layer '{target_layer_name}' not found in model.base_model. Attempting to find a fallback layer.")
+         # Fallback: try finding the layer often preceding global pool/classifier
+        potential_last_conv = None
+        # Iterate backwards through blocks if they exist
+        if hasattr(model.base_model, 'blocks'):
+            for block in reversed(model.base_model.blocks):
+                 # Common pattern: check for conv layers within the block
+                 # This might need adjustment based on specific EfficientNet variant
+                if hasattr(block, 'conv_pwl'): # Example check
+                    potential_last_conv = block.conv_pwl
+                    break
+                elif hasattr(block, 'conv'): # Another common name
+                     potential_last_conv = block.conv
+                     break
+        if potential_last_conv:
+             target_layer = potential_last_conv
+             print(f"Warning: Layer '{target_layer_name}' not found. Using fallback layer: {potential_last_conv}")
+        else:
+            print(f"Error: Could not find target layer '{target_layer_name}' or a fallback in model.base_model. Cannot extract activation maps.")
+            # You might want to print model structure here for debugging: print(model.base_model)
+            return
+        
+    prep_image_util = PrepareImage(height=audio_cfg.N_MELS, width=audio_cfg.CHUNK_WIDTH)
+    image_transform_valid = AbluTransforms(audio_cfg).valid
+
+    for label, file_path in [("Positive", pos_file), ("Negative", neg_file)]:
+        activation.clear() # Clear previous activation
+        hook_registered = False
+        try:
+            # --- Load and Preprocess Audio ---
+            y = load_sf(file_path)
+            target_len = int(audio_cfg.DURATION * audio_cfg.SR)
+            if len(y) > target_len:
+                # Center crop for visualization consistency if longer
+                start = (len(y) - target_len) // 2
+                window = y[start : start + target_len]
+                print(f"Warning: Audio clip is longer than {target_len} samples. Center-cropping to fit.")
+            elif len(y) < target_len:
+                # Pad if shorter - using existing logic, 'val' ensures no random start
+                window = crop_or_pad(y, target_len, train='val')
+                print(f"Warning: Audio clip is shorter than {target_len} samples. Padding to fit.")
+            else:
+                window = y
+
+            # Use validation-style normalization
+            window = Normalize(p=1)(window, sr=audio_cfg.SR)
+            # Compute Spectrogram (raw for visualization)
+            audio_cfg_for_plot = DefaultAudio()
+            audio_cfg_for_plot.N_MELS = 256
+            audio_cfg_for_plot.CHUNK_WIDTH = 128
+            if audio_cfg.PCEN:
+                spec_raw = compute_pcen(window, audio_cfg)
+                spec_correct_res = compute_pcen(window, audio_cfg_for_plot)
+            else:
+                spec_raw = compute_melspec(window, audio_cfg)
+                spec_correct_res = compute_melspec(window, audio_cfg_for_plot)  
+            print(f"Spectrogram shape: {spec_raw.shape}")
+            print(f"Correct resolution shape: {spec_correct_res.shape}")
+            prep_result = prep_image_util.prep(image=spec_raw.copy())
+            image_prepped = prep_result['image'] # This is the spec the model sees
+
+            # Keep color conversion and transforms for model input tensor
+            image_color = mono_to_color(image_prepped.copy(), use_deltas=audio_cfg.USE_DELTAS)
+            image_transformed = image_transform_valid(image=image_color)['image']
+            image_tensor = torch.tensor(image_transformed.transpose(2, 0, 1).astype(np.float32)).unsqueeze(0).to(device)
+
+            # --- Run Model and Get Activation ---
+            if target_layer:
+                hook_handle = target_layer.register_forward_hook(get_activation_hook('feat'))
+                hook_registered = True
+            with torch.no_grad():
+                outputs = model(image_tensor)
+                prob = torch.sigmoid(outputs['logit']).item()
+            act_map = activation.get('feat')
+
+            # --- Process Activation Map ---
+            act_map = act_map.squeeze(0) # Remove batch dim
+            act_map = act_map.mean(dim=0) # Average over channels -> (h_act, w_act)
+            act_map_np = act_map.cpu().numpy()
+
+            # --- Resize activation map FIRST to the square shape the model saw ---
+            # Assuming model input is square (e.g., 386x386)
+            image_shape_h, image_shape_w = spec_correct_res.shape
+            act_map_resized_square = cv2.resize(act_map_np, (image_shape_w, image_shape_h), interpolation=cv2.INTER_CUBIC)
+
+            # Normalize the map
+            map_min, map_max = act_map_resized_square.min(), act_map_resized_square.max()
+            if map_max > map_min:
+                act_map_resized_square = (act_map_resized_square - map_min) / (map_max - map_min)
+            else:
+                # Ensure placeholder has the correct cropped shape
+                act_map_resized_square = np.zeros_like(spec_correct_res) # Use image_prepped shape
+
+            # --- Store results for plotting ---
+            results[label] = {
+                'spec_for_plot': spec_correct_res,           # The (256, 128) content spec
+                'act_map_for_plot': act_map_resized_square, # The map resized to (256,256)
+                'prob': prob,
+                'file': Path(file_path).name
+            }
+
+        except Exception as e:
+            print(f"Error processing {label} file {file_path}: {e}")
+            if label not in results: # Ensure placeholder exists if error occurred early
+                 results[label] = {'spec': None, 'act_map': None, 'prob': -1, 'file': Path(file_path).name}
+        finally:
+            if hook_handle and hook_registered:
+                hook_handle.remove()
+                hook_registered = False # Prevent double removal
+
+    # --- Plotting ---
+    if plot:
+        final_contour_colors = contour_colors
+        if isinstance(contour_colors, (list, tuple)):
+            if len(contour_colors) != len(contour_levels):
+                print(f"Warning: Length of contour_colors ({len(contour_colors)}) "
+                      f"does not match length of contour_levels ({len(contour_levels)}). "
+                      f"Falling back to default color 'white'.")
+                final_contour_colors = 'white' # Fallback
+        elif not isinstance(contour_colors, str):
+             print(f"Warning: Invalid type for contour_colors ({type(contour_colors)}). "
+                   f"Expected string or list/tuple. Falling back to 'white'.")
+             final_contour_colors = 'white' # Fallback
+
+        fig, axes = plt.subplots(1, 2, figsize=(7.5*2, 4.5))
+        # Add contour level info to title if levels are defined
+        contour_info = f" (Contours at {contour_levels})" if contour_levels else ""
+        fig.suptitle(f"Activation Contours{contour_info} (Layer: {'Identified Layer' if target_layer else 'Not Found'})", fontsize=16)
+
+        for i, label in enumerate(["Positive", "Negative"]):
+            ax = axes[i]
+            # Use the new keys from results dict
+            data = results.get(label, {'spec_for_plot': None, 'act_map_for_plot': None, 'prob': -1, 'file': 'N/A'})
+            spec_to_plot = data['spec_for_plot']       # Use the prepared spectrogram
+            act_map_norm = data['act_map_for_plot'] # Use the map resized to match spec_to_plot
+            prob = data['prob']
+            filename = data['file']
+
+            if spec_to_plot is None or act_map_norm is None:
+                 ax.text(0.5, 0.5, 'Error Processing', horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+                 ax.set_title(f"{label} Example\n{filename}\n(Error)", fontsize=12)
+                 continue
+
+            # 1. Display the spectrogram that was input to the model
+            spec_to_plot_safe = np.nan_to_num(spec_to_plot)
+            # Extent now matches the dimensions of the model input spec
+            img_extent = (0, spec_to_plot_safe.shape[1], 0, spec_to_plot_safe.shape[0])
+            im = ax.imshow(spec_to_plot_safe, aspect='auto', origin='lower',
+                           cmap=cmap_spec, extent=img_extent)
+
+            # 2. Draw contour lines for the activation map (already resized to match)
+            if contour_levels and np.any(act_map_norm) and act_map_norm.max() > min(contour_levels):
+                # Create coordinates matching spec_to_plot dimensions
+                x_coords = np.arange(act_map_norm.shape[1]) # Width (e.g., CHUNK_WIDTH)
+                y_coords = np.arange(act_map_norm.shape[0]) # Height (e.g., N_MELS)
+                X, Y = np.meshgrid(x_coords, y_coords)
+
+                # Draw contours on top of the image
+                ax.contour(X, Y, act_map_norm, levels=contour_levels,
+                           colors=final_contour_colors, linewidths=1.5,
+                           origin='lower', extent=img_extent) # Extent ensures alignment
+
+            ax.set_title(f"{label} Example\n{filename}\nPrediction Prob: {prob:.3f}", fontsize=12)
+            ax.set_xlabel("Time Frame", fontsize=12)
+            ax.set_ylabel("Mel Frequency", fontsize=12)
+            ax.tick_params(axis='both', which='major', labelsize=12)
+            # Create the colorbar and capture the returned object
+            cbar = fig.colorbar(im, ax=ax, label='PCEN')
+            # Increase the font size of the colorbar label
+            cbar.set_label('PCEN', fontsize=12)
+
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.show()
+
+    model.train() # Put model back in training mode if necessary
+
 def run_training(dl_train, dl_val, paths, data_cfg, train_cfg, audio_cfg, checkpoint_dir):
     pl.seed_everything(train_cfg.SEED, workers=True)
     torch.set_flush_denormal(True)
@@ -1561,11 +1845,14 @@ def extract_results(metrics, paths):
     # Loss plot
     ax1.plot(train_losses, label='Train Loss')
     ax1.plot(val_losses, label='Val Loss')
+    if paths.EVAL_DIR and any('rl-loss' in x for x in metrics): # Check if rl-loss exists
+        rl_losses = [x['rl-loss'] for x in metrics if 'rl-loss' in x]
+        ax1.plot(rl_losses, label='Real-Life Eval Loss', linestyle=':', color='orange') # Add RL loss plot
     ax1.set_xlabel('Epoch')
     ax1.set_ylabel('Loss')
     ax1.set_ylim(0, 1)
     ax1.legend()
-    
+
     # Metrics plot
     ax2.plot(val_precision, label='Precision', linestyle='--', color='green')
     ax2.plot(val_recall, label='Recall', linestyle='--', color='purple')
@@ -1976,12 +2263,29 @@ def main_training_function(use_case=None):
 
     save_model_config(paths, audio_cfg, train_cfg)
 
-    metrics = run_training(dl_train, dl_val, paths, data_cfg, train_cfg, audio_cfg, paths.chkpt_dir) 
+    metrics = run_training(dl_train, dl_val, paths, data_cfg, train_cfg, audio_cfg, paths.chkpt_dir)
     extract_results(metrics, paths)
     last_path = save_models(paths, train_cfg, audio_cfg, unique_birds)
+
+    # Clean up the temporary checkpoint directory after saving final models
+    try:
+        checkpoint_dir_path = Path(paths.chkpt_dir)
+        if checkpoint_dir_path.exists() and checkpoint_dir_path.is_dir():
+            shutil.rmtree(checkpoint_dir_path)
+            print(f"Successfully removed temporary checkpoint directory: {checkpoint_dir_path}")
+        else:
+             print(f"Temporary checkpoint directory not found or not a directory: {checkpoint_dir_path}")
+    except Exception as e:
+        print(f"Error removing temporary checkpoint directory {paths.chkpt_dir}: {e}")
+
     final_model = BirdSoundModel(train_cfg, audio_cfg, paths, in_channels=3)
-    model_state_dict = torch.load(last_path)
-    final_model.load_state_dict(model_state_dict)
+    # Ensure last_path points to a file in the Results directory now
+    last_path_in_results = Path(paths.out_dir) / Path(last_path).name
+    if last_path_in_results.exists():
+        model_state_dict = torch.load(last_path_in_results)
+        final_model.load_state_dict(model_state_dict)
+    else:
+        print(f"Warning: Could not find final model state dict at {last_path_in_results} to load.")
     print(Stop.S + 'Model loaded OK' + Stop.E)
     print('')
 

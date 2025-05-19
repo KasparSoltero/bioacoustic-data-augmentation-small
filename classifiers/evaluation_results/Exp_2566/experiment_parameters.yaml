@@ -1,0 +1,7 @@
+experiment_id: 2566
+parameters:
+  output.snr_range:
+  - 0.3
+  - 1
+  repetition: 4
+status: completed

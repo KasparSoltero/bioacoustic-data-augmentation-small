@@ -1,8 +1,0 @@
-aggregation: none
-basename: tf_efficientnet_b0.ns_jft_in1k
-hop_length: 1243
-n_fft: 2048
-n_mels: 256
-use_deltas: true
-window_duration: 10
-window_overlap: 0.5

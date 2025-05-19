@@ -40,9 +40,14 @@ def plot_labels(config, idx=[0,-1], save_directory='output'):
         rows *= 2
     if rows > 4:
         rows = 4
-        
+    
+    if idx[1] - idx[0] < 3:
+        cols = (idx[1] - idx[0]) % 3
+    else:
+        cols = 3
+
     # Plotting the spectrograms
-    fig, axes = plt.subplots(rows, 3, figsize=(20, 4 * rows))
+    fig, axes = plt.subplots(rows, cols, figsize=(7.5*cols, 4.5 * rows))
     fig.canvas.manager.set_window_title('') 
     fig.suptitle(f'{save_directory}/artificial_dataset/images', fontsize=12)
 
@@ -57,6 +62,10 @@ def plot_labels(config, idx=[0,-1], save_directory='output'):
         row_idx = i // 3
         col_idx = i % 3
         if row_idx >= rows:
+            print(f'Plotting stopped at {i} images - too many rows')
+            break
+        if col_idx >= cols:
+            print(f'Plotting stopped at {i} images - too many columns')
             break
         
         image = Image.open(f'{save_directory}/artificial_dataset/images/{image_path}')
@@ -87,7 +96,7 @@ def plot_labels(config, idx=[0,-1], save_directory='output'):
                 box_width = width * 10
                 box_height = height * 24000
                 rect = plt.Rectangle((x_min - box_width/2, y_min - box_height/2), box_width, box_height,
-                                    linewidth=1, edgecolor=custom_color_maps['teal'], facecolor='none')
+                                    linewidth=1, edgecolor='#ffffff', facecolor='none')
                 # elif box[0] == 0:
                     # rect = plt.Rectangle((x_min - box_width/2, y_min - box_height/2), box_width, box_height, 
                                         # linewidth=1, edgecolor='white', facecolor='none', linestyle='--')
@@ -177,8 +186,10 @@ def plot_labels(config, idx=[0,-1], save_directory='output'):
         yticklabels = [0, 1, 2, 5, 10, 24]
         ax.set_yticklabels(yticklabels)
         ax.set_title(f'{image_path[:1]}')
-        ax.set_xlabel('Time (s)', fontsize=10)
-        ax.set_ylabel('Frequency (kHz)', fontsize=10)
+        ax.set_xlabel('Time (s)', fontsize=18)
+        ax.set_ylabel('Frequency (kHz)', fontsize=18)
+        # axis tick font size
+        ax.tick_params(axis='both', which='major', labelsize=18-2)
     
     plt.tight_layout()
     plt.show()
@@ -223,6 +234,7 @@ def load_input_dataset(data_root, background_path, positive_path, negative_path,
     for f in files:
         if config['input']['limit_positives'] and len(positive_segment_paths) >= config['input']['limit_positives']:
             print(f'Limiting positive examples to {config["input"]["limit_positives"]}')
+            print(f'chosen positives: {positive_segment_paths}')
             break
 
         for ext in config['input']['allowed_files']:
@@ -320,12 +332,13 @@ def generate_overlays(
         sound_files_dir = 'classifiers/augmented_dataset/sound_files'
         start_idx = find_max_index(sound_files_dir) + 1
         print(f"Concatenating from index {start_idx}")
+    if config['input']['limit_positives'] and config['input']['limit_positives'] > 0:
+        # ensure positive_overlay_range is not greater than limit_positives
+        positive_overlay_range[1] = min(positive_overlay_range[1], config['input']['limit_positives'])
 
     if clear_dataset and not config['output']['concatenate']:
-        os.system(f'rm -rf {save_directory}/artificial_dataset/images/train/*')
-        os.system(f'rm -rf {save_directory}/artificial_dataset/images/val/*')
-        os.system(f'rm -rf {save_directory}/artificial_dataset/box_labels/train/*')
-        os.system(f'rm -rf {save_directory}/artificial_dataset/box_labels/val/*')
+        os.system(f'rm -rf {save_directory}/artificial_dataset/images/*')
+        os.system(f'rm -rf {save_directory}/artificial_dataset/box_labels/*')
         os.system(f'rm -rf {save_directory}/artificial_dataset/mask_annotations.json')
         os.system(f'rm -rf {save_directory}/species_value_map.csv')
         os.system(f'rm -rf classifiers/augmented_dataset/sound_files/*')
@@ -366,7 +379,7 @@ def generate_overlays(
         idx = start_idx + idx_offset  # Use adjusted index
         if idx == n:
             break
-        label = str(idx) # image label
+        # label = str(idx) # image label
         # Select a random background noise (keep trying until one is long enough)
         noise_db = -9
         bg_noise_waveform_cropped = None
@@ -398,7 +411,7 @@ def generate_overlays(
         # set db
         bg_noise_waveform_cropped = transform_waveform(bg_noise_waveform_cropped, set_db=noise_db)
 
-        label += '_' + background_datatags[os.path.basename(bg_noise_path)[:-4]]['overlay_label']
+        # label += '_' + background_datatags[os.path.basename(bg_noise_path)[:-4]]['overlay_label']
 
         # highpass filter set by background noise tags data
         highpass_hz = background_datatags[os.path.basename(bg_noise_path)[:-4]].get('highpass', None)
@@ -421,7 +434,7 @@ def generate_overlays(
         n_negative_overlays = random.randint(negative_overlay_range[0], negative_overlay_range[1])
         for j in range(n_negative_overlays):
             negative_segment_path = random.choice(negative_segment_paths)
-            label += '_'+negative_datatags[os.path.basename(negative_segment_path)[:-4]]['overlay_label']
+            # label += '_'+negative_datatags[os.path.basename(negative_segment_path)[:-4]]['overlay_label']
             
             negative_waveform, neg_sr = load_waveform(negative_segment_path)
 
@@ -433,8 +446,7 @@ def generate_overlays(
             overlay = torch.zeros_like(bg_noise_waveform_cropped)
             overlay[:,max(0,start) : max(0,start) + negative_waveform_cropped.shape[1]] = negative_waveform_cropped
             bg_noise_waveform_cropped += overlay
-
-            label += 'p' + f"{(10 ** ((neg_db - noise_db) / 10)).item():.3f}" # power label
+            # label += 'p' + f"{(10 ** ((neg_db - noise_db) / 10)).item():.3f}" # power label
             
         new_waveform = bg_noise_waveform_cropped.clone()
         bg_spec_temp = transform_waveform(bg_noise_waveform_cropped, to_spec='power')
@@ -477,13 +489,16 @@ def generate_overlays(
             positive_waveform, pos_sr = load_waveform(positive_segment_path)
             positive_waveform = transform_waveform(positive_waveform, resample=[pos_sr,sample_rate])
             positive_waveform_cropped, start = crop_overlay_waveform(bg_noise_waveform_cropped.shape[1], positive_waveform)
+
+            pos_db_normalising = -9
+            positive_waveform_cropped = transform_waveform(positive_waveform_cropped, set_db=pos_db_normalising)
             
             # attempt to place segment at least 1 seconds from other starts #TODO this introduces a bias
-            if positive_waveform.shape[1] < bg_noise_waveform_cropped.shape[1]:
-                for i in range(20):
-                    positive_waveform_cropped, start = crop_overlay_waveform(bg_noise_waveform_cropped.shape[1], positive_waveform)
-                    if not any([start < box[0] + 1*sample_rate and start > box[0] - 1*sample_rate for box in boxes]):
-                        break
+            # if positive_waveform.shape[1] < bg_noise_waveform_cropped.shape[1]:
+            #     for i in range(20):
+            #         positive_waveform_cropped, start = crop_overlay_waveform(bg_noise_waveform_cropped.shape[1], positive_waveform)
+                    # if not any([start < box[0] + 1*sample_rate and start > box[0] - 1*sample_rate for box in boxes]):
+                    #     break
 
             threshold = 2 # PSNR, db
             band_check_width = 5 # 5 bins
@@ -535,6 +550,11 @@ def generate_overlays(
                 # dynamically find the new bounding box after power shift
                 pos_spec_temp = transform_waveform(positive_waveform_cropped, to_spec='power')
             else:
+                print(f"{idx}: Error, unable to find bounding box for {positive_datatags[os.path.basename(positive_segment_path)[:-4]]['overlay_label']}")
+                # which was the error
+                print(f"first_pass_freq_start: {first_pass_freq_start}, first_pass_freq_end: {first_pass_freq_end}")
+                print(f"end_time_bins: {start_time_bins+seg_time_bins}, bg_time_bins: {bg_time_bins}")
+                print(f"seg_freq_bins: {seg_freq_bins}, seg_time_bins: {seg_time_bins}")
                 continue
 
             found=0
@@ -636,7 +656,7 @@ def generate_overlays(
                 print(f"{idx}: Error, too faint, power {pos_db-noise_db:.3f}")
                 continue
 
-            ## Paper small square Plot
+            # ## Paper small square Plot
             # combined_for_plot = bg_noise_waveform_cropped.clone()
             # combined_for_plot[:,max(0,start) : max(0,start) + positive_waveform_cropped.shape[1]] += positive_waveform_cropped
             # temp_comobined_spec = transform_waveform(combined_for_plot, to_spec='power')
@@ -648,7 +668,7 @@ def generate_overlays(
             #         [start_time_offset+10, end_time_offset+10, freq_start, freq_end]
             #         ]],
             #     box_format='xxyy',
-            #     set_width=1,fontsize=15,
+            #     set_width=1,fontsize=18,
             #     box_colors=['#00eaff','#45ff45'],
             #     box_styles=['solid','--'],
             #     box_widths=[3,3],
@@ -677,8 +697,9 @@ def generate_overlays(
             # add bounding box to list, in units of spectrogram time and log frequency bins
             boxes.append([max(start_time_offset,start_time_bins+start_time_offset), max(end_time_offset, start_time_bins+end_time_offset), freq_start, freq_end])
             classes = appendSpeciesClass(classes, species_class)
-            label += positive_datatags[os.path.basename(positive_segment_path)[:-4]]['overlay_label']
-            label += 'p' + f"{pos_snr:.1f}" # power label
+            # label += positive_datatags[os.path.basename(positive_segment_path)[:-4]]['overlay_label']
+            # label += 'p' + f"{pos_snr:.1f}" # power label
+            print(f'{idx}:    overlaying {os.path.basename(positive_segment_path)[:-4]} at {start_time_offset} - {end_time_offset}, freq {freq_start} - {freq_end}, power {pos_db-noise_db:.3f}, snr {pos_snr:.1f}')
 
             if output_generate_masks:
                 # Generate mask annotation
@@ -713,7 +734,7 @@ def generate_overlays(
 
                             boxes.append([new_start_bins+start_time_offset, new_start_bins+end_time_offset, freq_start, freq_end])
                             classes = appendSpeciesClass(classes, species_class)
-                            label += 'x' # repetition
+                            # label += 'x' # repetition
                             if output_generate_masks:
                                 mask_annotation = generate_masks(
                                     overlay_waveform=overlay,
@@ -903,6 +924,7 @@ def run_augmentation(config=None):
         plot=config['plot']['toggle'],
         color_mode=color_mode,
         repetitions=config['output']['repetitions'],
+        specify_noise=None
     )
 
 if __name__ == "__main__":
